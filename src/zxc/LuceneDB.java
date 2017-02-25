@@ -4,6 +4,7 @@ import java.io.File;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -38,32 +39,67 @@ public class LuceneDB {
 	public static String DBPASS = "20120607";
 	
 	Connection conn = null;
-	RAMDirectory memdir;
+	
+	public static void main(String[] args) {
+		LuceneDB db = new LuceneDB();
+		db.createIndex("SELECT * FROM publication");
+		
+		List<SearchResult> list1 = db.basicSearch("network san", 5, 10);	
+		for (SearchResult sr : list1) {
+			System.out.println(sr);
+		}
+		
+		List<SearchResult> list2 = db.spatialSearch("network san", new SearchRegion(2, 1, 20, 12), 10, 5);
+		for (SearchResult sr : list2) {
+			System.out.println(sr);
+		}
+	}
+	
 	
 	public LuceneDB() {
 		// TODO Auto-generated constructor stub
 		try {
 			Class.forName(DBDRIVER);
 			conn = (Connection) DriverManager.getConnection(DBURL, DBUSER, DBPASS);
-			memdir = new RAMDirectory();
 		} catch (Exception e) {
 			// TODO: handle exception
 			e.printStackTrace();
 		}
 	}
 	
-	public static void main(String[] args) {
-		LuceneDB db = new LuceneDB();
-		db.createIndex();
-		db.basicSearch("network san", 5, 10);
+	public void recycle() {
+		try {
+			conn.close();
+		} catch (SQLException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+	}
+
+	public List<SearchResult> basicSearch(String querystr, int numResultsToSkip, int numResultsToReturn) {
+		Directory memdir = createIndex("SELECT * FROM publication");
+		return basicQuery(memdir, querystr, numResultsToSkip, numResultsToReturn);
 	}
 	
-	public void createIndex() {
+
+    public List<SearchResult> spatialSearch(String querystr, SearchRegion region, int numResultsToSkip, int numResultsToReturn) {
+    	try {
+    		String sql = "select * from `publication` where X(location) >= " + region.lx + " and X(location) <= " + region.rx
+        			+ " and Y(location) >= " + region.ly + " and Y(location) <= " + region.ry;
+        	Directory memdir = createIndex(sql);
+        	return basicQuery(memdir, querystr, numResultsToSkip, numResultsToReturn);
+		} catch (Exception e) {
+			// TODO: handle exception
+			e.printStackTrace();
+		}
+    	return null;
+    }
+    
+    public Directory createIndex(String sql) {
+		RAMDirectory dirWrite = new RAMDirectory();
 		try {
 			IndexWriter writer = null;
-			String sql = "SELECT * FROM publication";
 			//Directory dirWrite = FSDirectory.open(new File("DBLPIndexes"));
-			RAMDirectory dirWrite = memdir;
 			Analyzer analyzer = new StandardAnalyzer(Version.LUCENE_4_10_4);
 			IndexWriterConfig iwc = new IndexWriterConfig(Version.LUCENE_4_10_4,analyzer);
 			iwc.setOpenMode(OpenMode.CREATE);
@@ -75,22 +111,23 @@ public class LuceneDB {
 			    // create indexes in fields below
 				doc.add(new Field("authors", rs.getString("authors"), Field.Store.YES,Field.Index.ANALYZED));
 				doc.add(new Field("title", rs.getString("title"), Field.Store.YES,Field.Index.ANALYZED));
+				doc.add(new Field("year", rs.getString("year"), Field.Store.YES,Field.Index.ANALYZED));
 			    writer.addDocument(doc);
 			}
 			rs.close(); 
-			conn.close(); 
 			// writer.optimize(); 
 			writer.close();
 		} catch (Exception e) {
 			// TODO: handle exception
 			e.printStackTrace();
 		}
+		return dirWrite;
 	}
 	
-	public void basicSearch(String querystr, int numResultsToSkip, int numResultsToReturn) {
+	public List<SearchResult> basicQuery(Directory dir, String querystr, int numResultsToSkip, int numResultsToReturn) {
+		List<SearchResult> list = new ArrayList<>();
 		try {
-			//or query
-			Directory dir = memdir;
+			//Directory dir = memdir;
 			IndexReader reader = DirectoryReader.open(dir);
 			IndexSearcher searcher = new IndexSearcher(reader);
 			String[] queryarr = querystr.split("\\s+");
@@ -107,34 +144,20 @@ public class LuceneDB {
 			Query query = MultiFieldQueryParser.parse(queries, fields, clauses, new StandardAnalyzer());		 
 			TopDocs topDocs = searcher.search(query, numResultsToReturn + numResultsToSkip);
 			ScoreDoc[] hits = topDocs.scoreDocs;
-			for (int i = 0; i < numResultsToReturn; i++) {
+			for (int i = 0; i < Math.min(numResultsToReturn, hits.length); i++) {
 				int DocId = hits[i + numResultsToSkip].doc;
 				Document doc = searcher.doc(DocId);
-				System.out.println(doc.get("authors") +" ; "+doc.get("title")); 
+				//System.out.println(doc.get("authors") +" ; "+doc.get("title")); 
+				String authors = doc.get("authors");
+				String title = doc.get("title");
+				int year = Integer.valueOf(doc.get("year"));
+				list.add(new SearchResult(title, authors, year));
 			}
 		} catch (Exception e) {
 			// TODO: handle exception
 			e.printStackTrace();
 		}
+		return list;
 	}
-	
-    public List<SearchResult> spatialSearch(String query, SearchRegion region, int numResultsToSkip, int numResultsToReturn) {
-    	List<SearchResult> list = new ArrayList<>();
-    	try {
-    		String sql = "select * from `publication` where X(location) > " + region.lx + " and X(location) < " + region.rx
-        			+ " and Y(location) > " + region.ly + " and Y(location) < " + region.ry;
-        	PreparedStatement pstmt = conn.prepareStatement(sql);
-        	ResultSet rs = pstmt.executeQuery();
-        	while (rs.next()) {
-        		SearchResult sr = new SearchResult(rs.getString("title"), rs.getString("authors"), rs.getInt("year"));
-        		list.add(sr);
-        	}
-		} catch (Exception e) {
-			// TODO: handle exception
-			e.printStackTrace();
-		}
-    	return list;
-    }
-	
 
 }
